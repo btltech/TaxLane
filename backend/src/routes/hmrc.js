@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const { db } = require('../config/database');
 const authMiddleware = require('../middleware/auth');
 const {
@@ -17,6 +18,7 @@ const HMRC_TOKEN_URL = process.env.HMRC_TOKEN_URL || 'https://test-api.service.h
 const HMRC_CLIENT_ID = process.env.HMRC_CLIENT_ID;
 const HMRC_CLIENT_SECRET = process.env.HMRC_CLIENT_SECRET;
 const REDIRECT_URI = process.env.HMRC_REDIRECT_URI || 'http://localhost:5001/api/hmrc/callback';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 const hmrcConfigured = () => Boolean(HMRC_CLIENT_ID && HMRC_CLIENT_SECRET && HMRC_CLIENT_ID !== 'YOUR_CLIENT_ID_HERE');
 
@@ -25,11 +27,28 @@ router.get('/status', authMiddleware, (req, res) => {
   res.json({ configured: hmrcConfigured() });
 });
 
-// Initiate OAuth - Request authorization from user
-router.get('/auth', authMiddleware, (req, res) => {
+// Initiate OAuth - Accept token as query param since this is a redirect
+router.get('/auth', (req, res) => {
+  // Extract token from query param (for redirects) or header
+  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  
+  // Verify the token
+  let userId;
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_change_me');
+    userId = decoded.id;
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+  
   if (!hmrcConfigured()) {
     return res.status(503).json({ error: 'HMRC OAuth is not configured. Use mock connect instead.' });
   }
+  
   // Scopes needed for MTD Self Assessment and VAT
   const scopes = [
     'read:vat',
@@ -38,7 +57,7 @@ router.get('/auth', authMiddleware, (req, res) => {
     'write:self-assessment'
   ].join(' ');
   
-  const authUrl = `${HMRC_AUTH_URL}?client_id=${HMRC_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}&response_type=code&state=${req.user.id}`;
+  const authUrl = `${HMRC_AUTH_URL}?client_id=${HMRC_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}&response_type=code&state=${userId}`;
   res.redirect(authUrl);
 });
 
@@ -48,16 +67,16 @@ router.get('/callback', async (req, res) => {
   
   if (error) {
     console.error('HMRC OAuth error:', error, error_description);
-    return res.status(400).send(`HMRC authorization failed: ${error_description || error}`);
+    return res.redirect(`${FRONTEND_URL}/hmrc?error=${encodeURIComponent(error_description || error)}`);
   }
   
   const parsedUserId = parseInt(userId, 10);
   if (!parsedUserId) {
-    return res.status(400).send('Invalid user state provided.');
+    return res.redirect(`${FRONTEND_URL}/hmrc?error=${encodeURIComponent('Invalid user state')}`);
   }
   
   if (!code) {
-    return res.status(400).send('No authorization code received.');
+    return res.redirect(`${FRONTEND_URL}/hmrc?error=${encodeURIComponent('No authorization code received')}`);
   }
 
   try {
@@ -80,111 +99,112 @@ router.get('/callback', async (req, res) => {
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
     const expiresAt = new Date(Date.now() + (expires_in * 1000));
 
-    db.run(
-      'INSERT OR REPLACE INTO hmrc_tokens (user_id, access_token, refresh_token, expires_at) VALUES (?, ?, ?, ?)',
-      [parsedUserId, access_token, refresh_token, expiresAt.toISOString()],
-      (err) => {
-        if (err) {
-          console.error('DB error saving token:', err);
-          return res.status(500).send('Failed to save HMRC credentials.');
-        }
-        res.send(`
-          <html>
-            <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f8fafc;">
-              <div style="text-align: center; padding: 2rem; background: white; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                <div style="font-size: 3rem; margin-bottom: 1rem;">✅</div>
-                <h1 style="color: #0f172a; margin-bottom: 0.5rem;">HMRC Connected!</h1>
-                <p style="color: #64748b;">You can close this window and return to TaxLane.</p>
-              </div>
-            </body>
-          </html>
-        `);
-      }
-    );
+    // PostgreSQL-compatible upsert
+    try {
+      await db.query(
+        `INSERT INTO hmrc_tokens (user_id, access_token, refresh_token, expires_at) 
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id) DO UPDATE SET 
+           access_token = EXCLUDED.access_token,
+           refresh_token = EXCLUDED.refresh_token,
+           expires_at = EXCLUDED.expires_at`,
+        [parsedUserId, access_token, refresh_token, expiresAt.toISOString()]
+      );
+      
+      // Redirect back to frontend with success
+      res.redirect(`${FRONTEND_URL}/hmrc?success=true`);
+    } catch (dbErr) {
+      console.error('DB error saving token:', dbErr);
+      res.redirect(`${FRONTEND_URL}/hmrc?error=${encodeURIComponent('Failed to save HMRC credentials')}`);
+    }
   } catch (tokenError) {
     console.error('Token exchange error:', tokenError.response?.data || tokenError.message);
-    res.status(500).send(`Failed to exchange authorization code: ${tokenError.response?.data?.error_description || tokenError.message}`);
+    const errMsg = tokenError.response?.data?.error_description || tokenError.message;
+    res.redirect(`${FRONTEND_URL}/hmrc?error=${encodeURIComponent(errMsg)}`);
   }
 });
 
 // Refresh access token
 const refreshAccessToken = async (userId) => {
-  return new Promise((resolve, reject) => {
-    db.get('SELECT * FROM hmrc_tokens WHERE user_id = ?', [userId], async (err, row) => {
-      if (err || !row) return reject(new Error('No HMRC token found'));
-      
-      if (!row.refresh_token || row.refresh_token.startsWith('mock_')) {
-        return reject(new Error('Cannot refresh mock token'));
-      }
+  const result = await db.query('SELECT * FROM hmrc_tokens WHERE user_id = $1', [userId]);
+  const row = result.rows[0];
+  
+  if (!row) throw new Error('No HMRC token found');
+  
+  if (!row.refresh_token || row.refresh_token.startsWith('mock_')) {
+    throw new Error('Cannot refresh mock token');
+  }
 
-      try {
-        const response = await axios.post(HMRC_TOKEN_URL,
-          new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: row.refresh_token,
-            client_id: HMRC_CLIENT_ID,
-            client_secret: HMRC_CLIENT_SECRET
-          }).toString(),
-          {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-          }
-        );
+  const response = await axios.post(HMRC_TOKEN_URL,
+    new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: row.refresh_token,
+      client_id: HMRC_CLIENT_ID,
+      client_secret: HMRC_CLIENT_SECRET
+    }).toString(),
+    {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    }
+  );
 
-        const { access_token, refresh_token, expires_in } = response.data;
-        const expiresAt = new Date(Date.now() + (expires_in * 1000));
+  const { access_token, refresh_token, expires_in } = response.data;
+  const expiresAt = new Date(Date.now() + (expires_in * 1000));
 
-        db.run(
-          'UPDATE hmrc_tokens SET access_token = ?, refresh_token = ?, expires_at = ? WHERE user_id = ?',
-          [access_token, refresh_token || row.refresh_token, expiresAt.toISOString(), userId],
-          (updateErr) => {
-            if (updateErr) return reject(updateErr);
-            resolve(access_token);
-          }
-        );
-      } catch (refreshErr) {
-        reject(refreshErr);
-      }
-    });
-  });
+  await db.query(
+    'UPDATE hmrc_tokens SET access_token = $1, refresh_token = $2, expires_at = $3 WHERE user_id = $4',
+    [access_token, refresh_token || row.refresh_token, expiresAt.toISOString(), userId]
+  );
+  
+  return access_token;
 };
 
 // Get valid access token (refresh if expired)
-const getValidToken = (userId) => {
-  return new Promise((resolve, reject) => {
-    db.get('SELECT * FROM hmrc_tokens WHERE user_id = ?', [userId], async (err, row) => {
-      if (err || !row) return reject(new Error('No HMRC token found'));
-      
-      // Check if token is expired (with 5 min buffer)
-      const expiresAt = new Date(row.expires_at);
-      const now = new Date();
-      const fiveMinutes = 5 * 60 * 1000;
-      
-      if (expiresAt.getTime() - now.getTime() < fiveMinutes) {
-        // Token expired or about to expire, try to refresh
-        try {
-          const newToken = await refreshAccessToken(userId);
-          resolve(newToken);
-        } catch (refreshErr) {
-          // If refresh fails, return existing token (might still work for mock)
-          resolve(row.access_token);
-        }
-      } else {
-        resolve(row.access_token);
-      }
-    });
-  });
+const getValidToken = async (userId) => {
+  const result = await db.query('SELECT * FROM hmrc_tokens WHERE user_id = $1', [userId]);
+  const row = result.rows[0];
+  
+  if (!row) throw new Error('No HMRC token found');
+  
+  // Check if token is expired (with 5 min buffer)
+  const expiresAt = new Date(row.expires_at);
+  const now = new Date();
+  const fiveMinutes = 5 * 60 * 1000;
+  
+  if (expiresAt.getTime() - now.getTime() < fiveMinutes) {
+    // Token expired or about to expire, try to refresh
+    try {
+      const newToken = await refreshAccessToken(userId);
+      return newToken;
+    } catch (refreshErr) {
+      // If refresh fails, return existing token (might still work for mock)
+      return row.access_token;
+    }
+  } else {
+    return row.access_token;
+  }
 };
 
 // Explicit mock connect for local/testing environments
-router.post('/mock-connect', authMiddleware, (req, res) => {
+router.post('/mock-connect', authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const access_token = `mock_access_token_${Date.now()}`;
   const refresh_token = `mock_refresh_token_${Date.now()}`;
   const expiresAt = new Date(Date.now() + 3600 * 1000);
-  db.run('INSERT OR REPLACE INTO hmrc_tokens (user_id, access_token, refresh_token, expires_at) VALUES (?, ?, ?, ?)', [userId, access_token, refresh_token, expiresAt.toISOString()], (err) => {
-    if (err) return res.status(500).json({ error: err.message });
+  
+  try {
+    await db.query(
+      `INSERT INTO hmrc_tokens (user_id, access_token, refresh_token, expires_at) 
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id) DO UPDATE SET 
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         expires_at = EXCLUDED.expires_at`,
+      [userId, access_token, refresh_token, expiresAt.toISOString()]
+    );
     res.json({ message: 'HMRC connected in mock mode.' });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Fraud Prevention Headers (required by HMRC)
@@ -306,45 +326,51 @@ router.post('/submit', authMiddleware, async (req, res) => {
         status = 'failed';
         
         // Log the error
-        db.run(
-          'INSERT INTO error_logs (user_id, error_type, message, details) VALUES (?, ?, ?, ?)',
+        await db.query(
+          'INSERT INTO error_logs (user_id, error_type, message, details) VALUES ($1, $2, $3, $4)',
           [userId, 'hmrc_submission', hmrcError.message, JSON.stringify(hmrcResponse)]
         );
       }
     }
 
     // Save submission record
-    db.run(
-      'INSERT INTO mtd_submissions (user_id, type, period, payload, hmrc_response, status) VALUES (?, ?, ?, ?, ?, ?)',
-      [userId, type, periodInfo.periodKey, JSON.stringify(payload), JSON.stringify(hmrcResponse), status],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        const submissionId = this.lastID;
-        
-        if (status === 'success') {
-          linkSubmissionToObligation(userId, periodInfo.periodKey, submissionId)
-            .then(() => res.json({ message: 'Submitted successfully', hmrcResponse }))
-            .catch((linkErr) => res.status(500).json({ error: linkErr.message }));
-        } else {
-          res.status(400).json({ 
-            error: 'HMRC submission failed', 
-            details: hmrcResponse,
-            submissionId 
-          });
+    try {
+      const result = await db.query(
+        'INSERT INTO mtd_submissions (user_id, type, period, payload, hmrc_response, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+        [userId, type, periodInfo.periodKey, JSON.stringify(payload), JSON.stringify(hmrcResponse), status]
+      );
+      const submissionId = result.rows[0].id;
+      
+      if (status === 'success') {
+        try {
+          await linkSubmissionToObligation(userId, periodInfo.periodKey, submissionId);
+          res.json({ message: 'Submitted successfully', hmrcResponse });
+        } catch (linkErr) {
+          res.status(500).json({ error: linkErr.message });
         }
+      } else {
+        res.status(400).json({ 
+          error: 'HMRC submission failed', 
+          details: hmrcResponse,
+          submissionId 
+        });
       }
-    );
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Get submissions
-router.get('/submissions', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM mtd_submissions WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json(rows);
-  });
+router.get('/submissions', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM mtd_submissions WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

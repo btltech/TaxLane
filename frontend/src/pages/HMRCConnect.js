@@ -1,14 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useSearchParams } from 'react-router-dom';
 import API_URL from '../config/api';
 
 function HMRCConnect() {
   const [status, setStatus] = useState({ loading: true, configured: false });
   const [message, setMessage] = useState('');
+  const [messageType, setMessageType] = useState('info'); // 'success', 'error', 'info'
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
+    // Check for OAuth callback result
+    const success = searchParams.get('success');
+    const error = searchParams.get('error');
+    
+    if (success === 'true') {
+      setMessage('Successfully connected to HMRC! You can now submit tax returns.');
+      setMessageType('success');
+    } else if (error) {
+      setMessage(`HMRC connection failed: ${decodeURIComponent(error)}`);
+      setMessageType('error');
+    }
+    
     checkStatus();
-  }, []);
+  }, [searchParams]);
 
   const checkStatus = async () => {
     setStatus((prev) => ({ ...prev, loading: true }));
@@ -18,15 +33,17 @@ function HMRCConnect() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setStatus({ loading: false, configured: Boolean(res.data.configured) });
-      setMessage('');
     } catch (error) {
       setStatus({ loading: false, configured: false });
       setMessage(error.response?.data?.error || 'Unable to determine HMRC connection status.');
+      setMessageType('error');
     }
   };
 
   const handleConnect = () => {
-    window.location.href = `${API_URL}/api/hmrc/auth`;
+    const token = localStorage.getItem('token');
+    // Pass the token as a query parameter since this is a redirect
+    window.location.href = `${API_URL}/api/hmrc/auth?token=${encodeURIComponent(token)}`;
   };
 
   const handleMockConnect = async () => {
@@ -36,8 +53,10 @@ function HMRCConnect() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setMessage('HMRC connected in mock mode. You can now submit test returns.');
+      setMessageType('success');
     } catch (error) {
       setMessage(error.response?.data?.error || 'Failed to complete mock connection.');
+      setMessageType('error');
     }
   };
 
@@ -109,8 +128,24 @@ function HMRCConnect() {
             )}
 
             {message && (
-              <div className={`p-4 rounded-md ${message.includes('failed') ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}`}>
-                {message}
+              <div className={`p-4 rounded-md ${
+                messageType === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
+                messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-200' :
+                'bg-blue-50 text-blue-700 border border-blue-200'
+              }`}>
+                <div className="flex items-center">
+                  {messageType === 'success' && (
+                    <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {messageType === 'error' && (
+                    <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {message}
+                </div>
               </div>
             )}
           </div>
