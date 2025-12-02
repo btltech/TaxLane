@@ -1,4 +1,3 @@
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 // Support Postgres if DATABASE_URL is provided, otherwise use SQLite for local dev
@@ -15,16 +14,17 @@ if (DATABASE_URL) {
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
   });
   
-  // Create a db-like interface for PostgreSQL
+  // Create a PostgreSQL interface
   db = {
+    // Modern async query method
+    query: (sql, params = []) => pool.query(sql, params),
+    
+    // Legacy callback-based methods for backward compatibility
     run: (sql, params = [], callback) => {
       // Convert SQLite ? placeholders to PostgreSQL $1, $2, etc.
       let pgSql = sql;
       let paramIndex = 0;
       pgSql = pgSql.replace(/\?/g, () => `$${++paramIndex}`);
-      // Convert SQLite-specific syntax
-      pgSql = pgSql.replace(/INSERT OR REPLACE/gi, 'INSERT');
-      pgSql = pgSql.replace(/INTEGER PRIMARY KEY/gi, 'SERIAL PRIMARY KEY');
       
       pool.query(pgSql, params)
         .then((result) => {
@@ -56,7 +56,6 @@ if (DATABASE_URL) {
         .catch((err) => callback(err));
     },
     serialize: (callback) => {
-      // PostgreSQL doesn't need serialize, just execute
       if (callback) callback();
     },
     exec: (sql, callback) => {
@@ -68,8 +67,27 @@ if (DATABASE_URL) {
   
   console.log('Using PostgreSQL database');
 } else {
+  const sqlite3 = require('sqlite3').verbose();
   const dbPath = path.join(__dirname, '../../database.db');
-  db = new sqlite3.Database(dbPath);
+  const sqliteDb = new sqlite3.Database(dbPath);
+  
+  // Wrap SQLite with query method for consistency
+  db = {
+    query: (sql, params = []) => {
+      return new Promise((resolve, reject) => {
+        sqliteDb.all(sql.replace(/\$\d+/g, '?'), params, (err, rows) => {
+          if (err) return reject(err);
+          resolve({ rows });
+        });
+      });
+    },
+    run: sqliteDb.run.bind(sqliteDb),
+    get: sqliteDb.get.bind(sqliteDb),
+    all: sqliteDb.all.bind(sqliteDb),
+    serialize: sqliteDb.serialize.bind(sqliteDb),
+    exec: sqliteDb.exec.bind(sqliteDb)
+  };
+  
   console.log('Using SQLite database');
 }
 
