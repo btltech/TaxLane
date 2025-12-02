@@ -49,12 +49,10 @@ router.get('/auth', (req, res) => {
     return res.status(503).json({ error: 'HMRC OAuth is not configured. Use mock connect instead.' });
   }
   
-  // Scopes needed for MTD Self Assessment and VAT
+  // Scopes for MTD VAT (ensure your HMRC app is subscribed to VAT MTD API)
   const scopes = [
     'read:vat',
-    'write:vat',
-    'read:self-assessment',
-    'write:self-assessment'
+    'write:vat'
   ].join(' ');
   
   const authUrl = `${HMRC_AUTH_URL}?client_id=${HMRC_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}&response_type=code&state=${userId}`;
