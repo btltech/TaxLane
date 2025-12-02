@@ -13,7 +13,7 @@ const router = express.Router();
 
 // HMRC OAuth URLs (Sandbox)
 const HMRC_API_BASE = process.env.HMRC_API_BASE_URL || 'https://test-api.service.hmrc.gov.uk';
-const HMRC_AUTH_URL = process.env.HMRC_AUTH_URL || 'https://test-api.service.hmrc.gov.uk/oauth/authorize';
+const HMRC_AUTH_URL = process.env.HMRC_AUTH_URL || 'https://test-www.tax.service.gov.uk/oauth/authorize';
 const HMRC_TOKEN_URL = process.env.HMRC_TOKEN_URL || 'https://test-api.service.hmrc.gov.uk/oauth/token';
 const HMRC_CLIENT_ID = process.env.HMRC_CLIENT_ID;
 const HMRC_CLIENT_SECRET = process.env.HMRC_CLIENT_SECRET;
@@ -56,6 +56,9 @@ router.get('/auth', (req, res) => {
   ].join(' ');
   
   const authUrl = `${HMRC_AUTH_URL}?client_id=${HMRC_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scopes)}&response_type=code&state=${userId}`;
+  
+  console.log('Generated HMRC Auth URL:', authUrl); // Debugging
+  
   res.redirect(authUrl);
 });
 
