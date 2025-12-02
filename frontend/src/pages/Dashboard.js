@@ -17,10 +17,10 @@ function Dashboard() {
   };
 
   const fetchData = async () => {
+    try {
       const [calcRes, obligationRes] = await Promise.all([
         axios.get(`${API_URL}/api/calculations`, { headers: authHeaders() }),
         axios.get(`${API_URL}/api/hmrc/obligations`, { headers: authHeaders() }),
-      ]);xios.get('http://localhost:5001/api/hmrc/obligations', { headers: authHeaders() }),
       ]);
       setCalculations(calcRes.data);
       const obligations = obligationRes.data || [];

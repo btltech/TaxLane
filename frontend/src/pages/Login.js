@@ -11,8 +11,8 @@ function Login() {
     e.preventDefault();
     setLoading(true);
     const endpoint = isRegister ? 'register' : 'login';
+    try {
       const res = await axios.post(`${API_URL}/api/auth/${endpoint}`, form);
-      const res = await axios.post(`http://localhost:5001/api/auth/${endpoint}`, form);
       // Expecting { accessToken, refreshToken }
       const accessToken = res.data.accessToken || res.data.token;
       const refreshToken = res.data.refreshToken;
