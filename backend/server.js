@@ -38,7 +38,7 @@ app.use(express.json());
 
 // Health check endpoint for Railway
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '2.0', timestamp: new Date().toISOString() });
 });
 
 // Initialize database based on environment
