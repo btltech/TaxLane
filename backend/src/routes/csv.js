@@ -66,31 +66,28 @@ const parseCsv = (buffer) => {
   });
 };
 
-const run = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) return reject(err);
-    resolve(this);
-  });
-});
-
 router.get('/income/export', authMiddleware, async (req, res) => {
-  db.all('SELECT date, amount, description, category, client_id FROM income WHERE user_id = ? ORDER BY date DESC', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const csv = toCsv(rows, ['date', 'amount', 'description', 'category', 'client_id']);
+  try {
+    const result = await db.query('SELECT date, amount, description, category, client_id FROM income WHERE user_id = $1 ORDER BY date DESC', [req.user.id]);
+    const csv = toCsv(result.rows, ['date', 'amount', 'description', 'category', 'client_id']);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=income.csv');
     return res.send(csv);
-  });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 router.get('/expenses/export', authMiddleware, async (req, res) => {
-  db.all('SELECT date, amount, description, category FROM expenses WHERE user_id = ? ORDER BY date DESC', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const csv = toCsv(rows, ['date', 'amount', 'description', 'category']);
+  try {
+    const result = await db.query('SELECT date, amount, description, category FROM expenses WHERE user_id = $1 ORDER BY date DESC', [req.user.id]);
+    const csv = toCsv(result.rows, ['date', 'amount', 'description', 'category']);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=expenses.csv');
     return res.send(csv);
-  });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 const importRecords = async (rows, mapper) => {
@@ -121,7 +118,7 @@ router.post('/income/import', authMiddleware, rateLimit({ windowMs: 60 * 1000, m
     const description = row.description || '';
     const category = row.category || 'Other';
     const clientId = row.client_id ? parseInt(row.client_id, 10) : null;
-    await run('INSERT INTO income (user_id, amount, description, category, date, client_id) VALUES (?, ?, ?, ?, ?, ?)', [req.user.id, amount, description, category, date, clientId || null]);
+    await db.query('INSERT INTO income (user_id, amount, description, category, date, client_id) VALUES ($1, $2, $3, $4, $5, $6)', [req.user.id, amount, description, category, date, clientId || null]);
   });
   return res.json(result);
 });
@@ -135,7 +132,7 @@ router.post('/expenses/import', authMiddleware, rateLimit({ windowMs: 60 * 1000,
     if (!date || Number.isNaN(amount)) throw new Error('Missing date or amount.');
     const description = row.description || '';
     const category = row.category || 'Other';
-    await run('INSERT INTO expenses (user_id, amount, description, category, date) VALUES (?, ?, ?, ?, ?)', [req.user.id, amount, description, category, date]);
+    await db.query('INSERT INTO expenses (user_id, amount, description, category, date) VALUES ($1, $2, $3, $4, $5)', [req.user.id, amount, description, category, date]);
   });
   return res.json(result);
 });

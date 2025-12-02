@@ -5,20 +5,24 @@ const authMiddleware = require('../middleware/auth');
 const router = express.Router();
 
 // Get all clients
-router.get('/', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM clients WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json(rows);
-  });
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM clients WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Add client
-router.post('/', authMiddleware, (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   const { name, email } = req.body;
-  db.run('INSERT INTO clients (user_id, name, email) VALUES (?, ?, ?)', [req.user.id, name, email], function(err) {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  try {
+    const result = await db.query('INSERT INTO clients (user_id, name, email) VALUES ($1, $2, $3) RETURNING id', [req.user.id, name, email]);
+    res.json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

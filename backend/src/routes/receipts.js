@@ -42,23 +42,28 @@ const singleReceipt = (req, res, next) => {
 };
 
 // Upload receipt
-router.post('/', authMiddleware, rateLimit({ windowMs: 60 * 1000, max: 10 }), singleReceipt, (req, res) => {
+router.post('/', authMiddleware, rateLimit({ windowMs: 60 * 1000, max: 10 }), singleReceipt, async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded' });
   const { category } = req.body;
   const fileUrl = path.join('uploads', file.filename);
-  db.run('INSERT INTO receipts (user_id, file_url, file_name, category) VALUES (?, ?, ?, ?)', [req.user.id, fileUrl, file.originalname, category], function(err) {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  
+  try {
+    const result = await db.query('INSERT INTO receipts (user_id, file_url, file_name, category) VALUES ($1, $2, $3, $4) RETURNING id', [req.user.id, fileUrl, file.originalname, category]);
+    res.json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Get receipts
-router.get('/', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM receipts WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json(rows);
-  });
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM receipts WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

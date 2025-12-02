@@ -5,19 +5,15 @@ const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
-const getAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) return reject(err);
-    resolve(rows);
-  });
-});
+const getAll = async (sql, params = []) => {
+  const result = await db.query(sql, params);
+  return result.rows;
+};
 
-const getOne = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) return reject(err);
-    resolve(row);
-  });
-});
+const getOne = async (sql, params = []) => {
+  const result = await db.query(sql, params);
+  return result.rows[0];
+};
 
 const formatCurrency = (value) => `£${Number.parseFloat(value || 0).toFixed(2)}`;
 const formatDate = (value) => {
@@ -30,16 +26,16 @@ router.get('/report', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     const [income, expenses] = await Promise.all([
-      getAll('SELECT * FROM income WHERE user_id = ? ORDER BY date DESC', [userId]),
-      getAll('SELECT * FROM expenses WHERE user_id = ? ORDER BY date DESC', [userId]),
+      getAll('SELECT * FROM income WHERE user_id = $1 ORDER BY date DESC', [userId]),
+      getAll('SELECT * FROM expenses WHERE user_id = $1 ORDER BY date DESC', [userId]),
     ]);
-    const calc = await getOne('SELECT * FROM calculations WHERE user_id = ? ORDER BY id DESC LIMIT 1', [userId]);
+    const calc = await getOne('SELECT * FROM calculations WHERE user_id = $1 ORDER BY id DESC LIMIT 1', [userId]);
     const topClients = await getAll(
       `SELECT c.name as clientName, SUM(i.amount) as totalIncome
        FROM income i
        LEFT JOIN clients c ON c.id = i.client_id
-       WHERE i.user_id = ?
-       GROUP BY i.client_id
+       WHERE i.user_id = $1
+       GROUP BY c.name
        ORDER BY totalIncome DESC
        LIMIT 5`,
       [userId]
@@ -47,7 +43,7 @@ router.get('/report', authMiddleware, async (req, res) => {
     const categories = await getAll(
       `SELECT category, SUM(amount) as total
        FROM expenses
-       WHERE user_id = ?
+       WHERE user_id = $1
        GROUP BY category
        ORDER BY total DESC`,
       [userId]

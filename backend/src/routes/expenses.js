@@ -6,22 +6,27 @@ const { validateTransactionInput } = require('../utils/validation');
 const router = express.Router();
 
 // Get all expenses
-router.get('/', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM expenses WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json(rows);
-  });
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM expenses WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Add expense
-router.post('/', authMiddleware, (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   const { amount, description, category, date } = req.body;
   const validationError = validateTransactionInput({ amount, date });
   if (validationError) return res.status(400).json({ error: validationError });
-  db.run('INSERT INTO expenses (user_id, amount, description, category, date) VALUES (?, ?, ?, ?, ?)', [req.user.id, amount, description, category, date], function(err) {
-    if (err) return res.status(400).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  
+  try {
+    const result = await db.query('INSERT INTO expenses (user_id, amount, description, category, date) VALUES ($1, $2, $3, $4, $5) RETURNING id', [req.user.id, amount, description, category, date]);
+    res.json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

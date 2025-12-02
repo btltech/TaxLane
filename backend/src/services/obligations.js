@@ -1,26 +1,5 @@
 const { db } = require('../config/database');
 
-const runAsync = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) return reject(err);
-    resolve(this);
-  });
-});
-
-const getAsync = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) return reject(err);
-    resolve(row);
-  });
-});
-
-const allAsync = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) return reject(err);
-    resolve(rows);
-  });
-});
-
 const formatDate = (date) => date.toISOString().split('T')[0];
 const addMonths = (date, months) => {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -51,10 +30,10 @@ const parsePeriodKey = (periodKey) => {
 };
 
 async function ensureObligation(userId, info) {
-  const existing = await getAsync('SELECT id FROM hmrc_obligations WHERE user_id = ? AND period_key = ?', [userId, info.periodKey]);
-  if (!existing) {
-    await runAsync(
-      'INSERT INTO hmrc_obligations (user_id, period_key, start_date, end_date, due_date, status) VALUES (?, ?, ?, ?, ?, ?)',
+  const result = await db.query('SELECT id FROM hmrc_obligations WHERE user_id = $1 AND period_key = $2', [userId, info.periodKey]);
+  if (result.rows.length === 0) {
+    await db.query(
+      'INSERT INTO hmrc_obligations (user_id, period_key, start_date, end_date, due_date, status) VALUES ($1, $2, $3, $4, $5, $6)',
       [userId, info.periodKey, info.startDate, info.endDate, info.dueDate, 'open']
     );
   }
@@ -80,15 +59,15 @@ function deriveStatus(row) {
 
 async function getObligations(userId) {
   await ensureObligationsForUser(userId);
-  const rows = await allAsync(
+  const result = await db.query(
     `SELECT o.*, s.status AS submission_status, s.submitted_at
      FROM hmrc_obligations o
      LEFT JOIN mtd_submissions s ON s.id = o.submission_id
-     WHERE o.user_id = ?
+     WHERE o.user_id = $1
      ORDER BY o.start_date ASC`,
     [userId]
   );
-  return rows.map((row) => ({
+  return result.rows.map((row) => ({
     id: row.id,
     periodKey: row.period_key,
     startDate: row.start_date,
@@ -106,8 +85,8 @@ async function linkSubmissionToObligation(userId, periodKey, submissionId) {
   const info = parsePeriodKey(periodKey);
   if (!info) return;
   await ensureObligation(userId, info);
-  await runAsync(
-    'UPDATE hmrc_obligations SET status = ?, submission_id = ? WHERE user_id = ? AND period_key = ?',
+  await db.query(
+    'UPDATE hmrc_obligations SET status = $1, submission_id = $2 WHERE user_id = $3 AND period_key = $4',
     ['fulfilled', submissionId, userId, info.periodKey]
   );
 }
